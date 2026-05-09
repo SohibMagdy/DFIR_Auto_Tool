@@ -1,0 +1,85 @@
+# ═══════════════════════════════════════════════════════════════
+#  DFIRTool — .gitignore
+#  Digital Forensics & Incident Response Automation Tool
+# ═══════════════════════════════════════════════════════════════
+
+# ─── Python ──────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.egg-info/
+*.egg
+dist/
+build/
+*.whl
+
+# ─── Virtual Environments ───────────────────────────────────
+venv/
+.venv/
+env/
+.env/
+
+# ─── Tool Output (regenerated per run) ──────────────────────
+output/
+results/
+logs/
+
+# ─── Memory Dumps & Forensic Artifacts ──────────────────────
+*.mem
+*.raw
+*.vmem
+*.dmp
+*.img
+*.dd
+*.bin
+*.E01
+*.ex01
+*.AFF
+*.aff4
+*.lime
+
+# ─── Archives & Large Files ────────────────────────────────
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.7z
+*.rar
+*.iso
+
+# ─── VSCode ─────────────────────────────────────────────────
+.vscode/
+*.code-workspace
+
+# ─── JetBrains / PyCharm ────────────────────────────────────
+.idea/
+
+# ─── OS — Windows ───────────────────────────────────────────
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+# ─── OS — Linux / Kali ──────────────────────────────────────
+*~
+.nfs*
+.Trash-*
+.directory
+
+# ─── OS — macOS ──────────────────────────────────────────────
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# ─── Misc ────────────────────────────────────────────────────
+*.log
+*.bak
+*.swp
+*.swo
+*.tmp
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/

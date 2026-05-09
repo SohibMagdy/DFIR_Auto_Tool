@@ -1,0 +1,68 @@
+{
+    "memory_indicators": {
+        "rwx_memory": {
+            "description": "PAGE_EXECUTE_READWRITE memory region detected — common in shellcode injection",
+            "keywords": ["PAGE_EXECUTE_READWRITE"],
+            "score": 40,
+            "severity": "HIGH"
+        },
+        "process_injection": {
+            "description": "Suspicious process injection — MZ/PE header found in executable memory",
+            "keywords": ["MZ header", "This program cannot be run", "4d 5a", "MZ"],
+            "score": 45,
+            "severity": "CRITICAL"
+        }
+    },
+    "process_indicators": {
+        "wscript_execution": {
+            "description": "wscript.exe execution detected — often used to run malicious VBS scripts",
+            "keywords": ["wscript.exe", "cscript.exe"],
+            "score": 30,
+            "severity": "HIGH"
+        },
+        "vbs_script": {
+            "description": "VBScript file reference detected — commonly abused by malware droppers",
+            "keywords": [".vbs", ".vbe", ".wsf"],
+            "score": 30,
+            "severity": "HIGH"
+        },
+        "temp_execution": {
+            "description": "Process running from Temp or AppData directory — suspicious execution path",
+            "keywords": ["\\Temp\\", "\\AppData\\", "\\tmp\\", "%TEMP%"],
+            "score": 25,
+            "severity": "MEDIUM"
+        },
+        "random_executable": {
+            "description": "Executable with randomized name detected — possible malware binary",
+            "keywords": [],
+            "pattern": "^[a-z]{8,}\\.exe$|^[A-Za-z0-9]{32}\\.exe$",
+            "score": 35,
+            "severity": "HIGH"
+        },
+        "hidden_process": {
+            "description": "Hidden process detected — present in psscan but not in active process list",
+            "keywords": [],
+            "score": 35,
+            "severity": "HIGH"
+        }
+    },
+    "network_indicators": {
+        "suspicious_ports": {
+            "description": "Connection on a commonly abused port detected",
+            "ports": [4444, 5555, 1234, 8080, 9999, 6666, 31337, 12345, 6667, 6697],
+            "score": 30,
+            "severity": "HIGH"
+        },
+        "external_connection": {
+            "description": "External network connection from suspicious process",
+            "keywords": [],
+            "score": 20,
+            "severity": "MEDIUM"
+        }
+    },
+    "scoring_thresholds": {
+        "normal": { "min": 0, "max": 30, "label": "NORMAL", "color": "green" },
+        "suspicious": { "min": 31, "max": 60, "label": "SUSPICIOUS", "color": "yellow" },
+        "highly_suspicious": { "min": 61, "max": 100, "label": "HIGHLY SUSPICIOUS", "color": "red" }
+    }
+}
