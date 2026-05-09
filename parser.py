@@ -1,5 +1,5 @@
 """
-parser.py — Raw Volatility output parser.
+parser.py -- Raw Volatility output parser (v1.2).
 
 Reads the text files produced by volatility_runner and converts them
 into structured Python data that the detector can consume.
@@ -13,6 +13,10 @@ Design principle:
 
   The detector can use whichever representation is more reliable for
   each detection rule.
+
+v1.2 additions:
+  - pslist/pstree parsers for PPID-based process tree data
+  - malfind block context parser (process -> hex dump association)
 """
 
 import re
@@ -30,8 +34,10 @@ class OutputParser:
     def __init__(self) -> None:
         # Structured records per plugin
         self.parsed_data: dict[str, list[dict]] = {}
-        # Raw text per plugin (always populated — the fallback for detection)
+        # Raw text per plugin (always populated -- the fallback for detection)
         self.raw_text: dict[str, str] = {}
+        # v1.2: enriched malfind blocks with process context
+        self.malfind_blocks: list[dict] = []
 
     # ── Generic helpers ──────────────────────────────────────────────────
 
@@ -78,6 +84,34 @@ class OutputParser:
                 break
 
         header_line = lines[header_idx]
+
+        # ── Check if data is tab-separated ───────────────────────────────
+        # Tab-separated is common in Vol3. Detect by counting tabs in header.
+        if "\t" in header_line and header_line.count("\t") >= 2:
+            headers = [h.strip() for h in header_line.split("\t") if h.strip()]
+            if not headers:
+                return []
+
+            data_start = (separator_idx + 1) if separator_idx is not None else (header_idx + 1)
+            records: list[dict] = []
+
+            for line in lines[data_start:]:
+                stripped = line.strip()
+                if not stripped:
+                    continue
+                if set(stripped.replace(" ", "").replace("\t", "")) <= {"-"}:
+                    continue
+                if re.match(r"^0x[0-9a-fA-F]+\s", stripped):
+                    continue
+
+                values = [v.strip() for v in line.split("\t")]
+                record = {}
+                for j, header in enumerate(headers):
+                    record[header] = values[j] if j < len(values) else ""
+                record["_raw_line"] = line
+                records.append(record)
+
+            return records
 
         # ── Detect column start positions from header ────────────────────
         # Columns in Vol3 are separated by \t or multiple spaces
@@ -185,7 +219,7 @@ class OutputParser:
                     if alt in rec:
                         rec["Args"] = rec[alt]
                         break
-            # Fallback — use the raw line as Args for keyword searches
+            # Fallback -- use the raw line as Args for keyword searches
             if not rec.get("Args"):
                 rec["Args"] = rec.get("_raw_line", "")
 
@@ -194,11 +228,85 @@ class OutputParser:
         console.print(f"  [dim]windows.cmdline  -> {len(records)} records[/dim]")
         return records
 
+    def parse_pslist(self) -> list[dict]:
+        """Parse windows.pslist output (provides PPID for process tree).
+
+        Vol3 pslist format:
+          PID  PPID  ImageFileName  Offset  Threads  Handles  ...
+        """
+        raw = self._read_file(OUTPUT_DIR / "windows_pslist.txt")
+        if not raw:
+            logger.info("pslist output not available -- skipping")
+            console.print("  [dim]windows.pslist   -> [yellow]not available (skipped)[/yellow][/dim]")
+            return []
+
+        self.raw_text["pslist"] = raw
+        records = self._parse_table_output(raw)
+
+        # Normalise column names
+        for rec in records:
+            if "Process" not in rec:
+                for alt in ("ImageFileName", "Name"):
+                    if alt in rec:
+                        rec["Process"] = rec[alt]
+                        break
+            # Ensure PPID is present
+            if "PPID" not in rec:
+                for alt in ("InheritedFromUniqueProcessId", "ParentPID"):
+                    if alt in rec:
+                        rec["PPID"] = rec[alt]
+                        break
+
+        self.parsed_data["pslist"] = records
+        logger.info("Parsed %d pslist entries", len(records))
+        console.print(f"  [dim]windows.pslist   -> {len(records)} records[/dim]")
+        return records
+
+    def parse_pstree(self) -> list[dict]:
+        """Parse windows.pstree output (provides indented tree + PPID).
+
+        Vol3 pstree format (indented):
+          PID  PPID  ImageFileName  ...
+          * 4  0     System
+          ** 88  4   Registry
+          ** 328  4  smss.exe
+        """
+        raw = self._read_file(OUTPUT_DIR / "windows_pstree.txt")
+        if not raw:
+            logger.info("pstree output not available -- skipping")
+            console.print("  [dim]windows.pstree   -> [yellow]not available (skipped)[/yellow][/dim]")
+            return []
+
+        self.raw_text["pstree"] = raw
+        records = self._parse_table_output(raw)
+
+        # pstree uses '*' for indentation; extract depth
+        for rec in records:
+            if "Process" not in rec:
+                for alt in ("ImageFileName", "Name"):
+                    if alt in rec:
+                        rec["Process"] = rec[alt]
+                        break
+            if "PPID" not in rec:
+                for alt in ("InheritedFromUniqueProcessId", "ParentPID"):
+                    if alt in rec:
+                        rec["PPID"] = rec[alt]
+                        break
+            # Detect tree depth from leading '*' characters
+            raw_line = rec.get("_raw_line", "")
+            stars = len(raw_line) - len(raw_line.lstrip("* "))
+            rec["_tree_depth"] = raw_line.count("*")
+
+        self.parsed_data["pstree"] = records
+        logger.info("Parsed %d pstree entries", len(records))
+        console.print(f"  [dim]windows.pstree   -> {len(records)} records[/dim]")
+        return records
+
     def parse_netscan(self) -> list[dict]:
         """Parse windows.netscan output (kept for future support)."""
         raw = self._read_file(OUTPUT_DIR / "windows_netscan.txt")
         if not raw:
-            logger.info("netscan output not available — skipping")
+            logger.info("netscan output not available -- skipping")
             console.print("  [dim]windows.netscan  -> [yellow]not available (skipped)[/yellow][/dim]")
             return []
 
@@ -213,7 +321,7 @@ class OutputParser:
         """Parse windows.netstat output."""
         raw = self._read_file(OUTPUT_DIR / "windows_netstat.txt")
         if not raw:
-            logger.info("netstat output not available — skipping")
+            logger.info("netstat output not available -- skipping")
             console.print("  [dim]windows.netstat  -> [yellow]not available (skipped)[/yellow][/dim]")
             return []
 
@@ -227,7 +335,7 @@ class OutputParser:
     def parse_malfind(self) -> list[dict]:
         """Parse windows.malfind output.
 
-        Malfind output is complex — each entry spans multiple lines:
+        Malfind output is complex -- each entry spans multiple lines:
           - A table row with PID, Process, Start VPN, End VPN, Protection, etc.
           - Followed by hex dump lines and/or disassembly
 
@@ -282,6 +390,9 @@ class OutputParser:
             if current_record:
                 records.append(current_record)
 
+        # ── v1.2: Build malfind blocks with process context ──────────────
+        self._build_malfind_blocks(raw, records)
+
         # Enrich all records with raw-text flags
         for rec in records:
             raw_line = rec.get("_raw_line", "")
@@ -293,6 +404,111 @@ class OutputParser:
         logger.info("Parsed %d malfind entries", len(records))
         console.print(f"  [dim]windows.malfind  -> {len(records)} records[/dim]")
         return records
+
+    def _build_malfind_blocks(self, raw: str, records: list[dict]) -> None:
+        """Build process-context-aware malfind blocks.
+
+        Scans the raw malfind output and associates every hex dump block
+        with the owning process from the preceding table row. This
+        eliminates 'Unknown (PID: ?)' findings.
+
+        Populates self.malfind_blocks with dicts:
+          {process, pid, protection, hex_dump, has_mz, is_rwx, start_vpn}
+        """
+        lines = raw.splitlines()
+        blocks: list[dict] = []
+        current_proc = "Unknown"
+        current_pid = "?"
+        current_protection = ""
+        current_vpn = ""
+        current_hex: list[str] = []
+        in_hex_block = False
+
+        for line in lines:
+            stripped = line.strip()
+            if not stripped:
+                continue
+
+            # Detect a table data row: starts with digits (PID) or contains a process name
+            pid_match = re.match(r"^(\d+)\s+(\S+\.?\S*)", stripped)
+            if pid_match and "PAGE_" in stripped:
+                # Save previous block
+                if current_hex or in_hex_block:
+                    hex_text = "\n".join(current_hex)
+                    blocks.append({
+                        "process": current_proc,
+                        "pid": current_pid,
+                        "protection": current_protection,
+                        "start_vpn": current_vpn,
+                        "hex_dump": hex_text,
+                        "has_mz": "4d 5a" in hex_text.lower() or "4d5a" in hex_text.lower(),
+                        "is_rwx": "PAGE_EXECUTE_READWRITE" in current_protection,
+                    })
+
+                # Start new block
+                current_pid = pid_match.group(1)
+                current_proc = pid_match.group(2)
+                current_protection = stripped
+                current_hex = []
+                in_hex_block = False
+
+                # Extract VPN
+                vpn_m = re.search(r"(0x[0-9a-fA-F]+)", stripped)
+                current_vpn = vpn_m.group(1) if vpn_m else ""
+                continue
+
+            # Also detect rows from structured records
+            if not pid_match and re.match(r"^\d+\s", stripped) and not re.match(r"^0x", stripped):
+                parts = stripped.split()
+                if len(parts) >= 2:
+                    # Could be a process row without PAGE_ on same line
+                    possible_pid = parts[0]
+                    possible_proc = parts[1]
+                    if possible_pid.isdigit() and len(possible_proc) > 2:
+                        if current_hex:
+                            hex_text = "\n".join(current_hex)
+                            blocks.append({
+                                "process": current_proc,
+                                "pid": current_pid,
+                                "protection": current_protection,
+                                "start_vpn": current_vpn,
+                                "hex_dump": hex_text,
+                                "has_mz": "4d 5a" in hex_text.lower() or "4d5a" in hex_text.lower(),
+                                "is_rwx": "PAGE_EXECUTE_READWRITE" in current_protection,
+                            })
+                        current_pid = possible_pid
+                        current_proc = possible_proc
+                        current_hex = []
+                        in_hex_block = False
+                        current_protection = stripped
+                        vpn_m = re.search(r"(0x[0-9a-fA-F]+)", stripped)
+                        current_vpn = vpn_m.group(1) if vpn_m else ""
+                        continue
+
+            # Hex dump line
+            if re.match(r"^0x[0-9a-fA-F]+\s", stripped):
+                current_hex.append(stripped)
+                in_hex_block = True
+                continue
+
+        # Save last block
+        if current_hex:
+            hex_text = "\n".join(current_hex)
+            blocks.append({
+                "process": current_proc,
+                "pid": current_pid,
+                "protection": current_protection,
+                "start_vpn": current_vpn,
+                "hex_dump": hex_text,
+                "has_mz": "4d 5a" in hex_text.lower() or "4d5a" in hex_text.lower(),
+                "is_rwx": "PAGE_EXECUTE_READWRITE" in current_protection,
+            })
+
+        self.malfind_blocks = blocks
+        self.parsed_data["malfind_blocks"] = blocks
+        if blocks:
+            console.print(f"  [dim]  malfind blocks  -> {len(blocks)} context-aware blocks[/dim]")
+        logger.info("Built %d malfind blocks with process context", len(blocks))
 
     def parse_psscan(self) -> list[dict]:
         """Parse windows.psscan output."""
@@ -323,14 +539,19 @@ class OutputParser:
 
         self.parse_info()
         self.parse_cmdline()
+        self.parse_pslist()
+        self.parse_pstree()
         self.parse_netstat()
         self.parse_netscan()
         self.parse_malfind()
         self.parse_psscan()
 
-        total = sum(len(v) for v in self.parsed_data.values())
+        total = sum(
+            len(v) for k, v in self.parsed_data.items()
+            if k != "malfind_blocks"  # Don't double-count
+        )
         console.print(
-            f"\n[green]✔ Parsed {total} total records across "
+            f"\n[green]>> Parsed {total} total records across "
             f"{len(self.parsed_data)} plugins[/green]"
         )
 

@@ -1,15 +1,15 @@
 """
-report_generator.py -- Forensic report generator (v1.1).
+report_generator.py -- Forensic report generator (v1.2).
 
 Produces comprehensive result files:
   - suspicious_findings.txt -- detailed list of every finding
   - final_report.txt        -- executive summary + all analysis sections
 
-v1.1 additions:
-  - Detection Confidence per finding
-  - IOC Summary section
-  - MITRE ATT&CK Summary table
-  - Behavioral Correlation Summary
+v1.2 additions:
+  - Process Relationship Summary with tree visualization
+  - Correlated Attack Chains section
+  - Top 5 Suspicious Processes ranked by effective_score
+  - Most Severe Behaviors section
 """
 
 from utils import console, RESULTS_DIR, setup_logging, separator, timestamp
@@ -26,6 +26,7 @@ class ReportGenerator:
         scorer,
         correlator=None,
         ioc_extractor=None,
+        process_analyzer=None,
     ) -> None:
         """
         Parameters
@@ -34,11 +35,13 @@ class ReportGenerator:
         scorer : ThreatScorer (after .calculate())
         correlator : CorrelationEngine, optional
         ioc_extractor : IOCExtractor, optional
+        process_analyzer : ProcessAnalyzer, optional (v1.2)
         """
         self.findings = findings
         self.scorer = scorer
         self.correlator = correlator
         self.ioc_extractor = ioc_extractor
+        self.process_analyzer = process_analyzer
 
     # ── Private helpers ──────────────────────────────────────────────────
 
@@ -98,11 +101,21 @@ class ReportGenerator:
                     lines.append(f"    {conf:10s}: {conf_counts[conf]} finding(s)")
             lines.append("")
 
+        # Count by category
+        cat_counts: dict[str, int] = {}
+        for f in self.findings:
+            cat_counts[f.category] = cat_counts.get(f.category, 0) + 1
+        if cat_counts:
+            lines.append("  Finding Categories:")
+            for cat, count in sorted(cat_counts.items()):
+                lines.append(f"    {cat:15s}: {count} finding(s)")
+            lines.append("")
+
         return lines
 
     def _build_mitre_section(self) -> list[str]:
         """Build the MITRE ATT&CK summary."""
-        mitre_map: dict[str, set[str]] = {}  # id -> set of techniques
+        mitre_map: dict[str, set[str]] = {}
         for f in self.findings:
             if f.mitre_id:
                 mitre_map.setdefault(f.mitre_id, set()).add(f.mitre_technique)
@@ -117,7 +130,6 @@ class ReportGenerator:
             f"  {'-'*14} {'-'*50} {'-'*5}",
         ]
 
-        # Count findings per MITRE ID
         mitre_count: dict[str, int] = {}
         for f in self.findings:
             if f.mitre_id:
@@ -129,6 +141,125 @@ class ReportGenerator:
             lines.append(f"  {mid:14s} {techniques:50s} {count}")
 
         lines.append("")
+        return lines
+
+    def _build_process_relationship_section(self) -> list[str]:
+        """Build the process relationship summary with tree visualization."""
+        if not self.process_analyzer:
+            return []
+
+        rels = self.process_analyzer.relationships
+        chains = self.process_analyzer.get_attack_chains()
+
+        if not rels and not chains:
+            return []
+
+        lines = [
+            "== PROCESS RELATIONSHIPS ======================================",
+            "",
+        ]
+
+        if rels:
+            lines.append("  Suspicious Parent-Child Relationships:")
+            lines.append("")
+            for idx, rel in enumerate(rels, 1):
+                lines.append(f"  {idx}. [{rel.severity}] {rel.description}")
+                lines.append(f"     Parent: {rel.parent_name} (PID: {rel.parent_pid})")
+                lines.append(f"     Child : {rel.child_name} (PID: {rel.child_pid})")
+                lines.append(f"     MITRE : {rel.mitre_id} ({rel.mitre_technique})")
+                if rel.chain:
+                    lines.append(f"     Chain : {' -> '.join(rel.chain)}")
+                lines.append("")
+
+        # Process tree
+        tree_text = self.process_analyzer.get_tree_text()
+        if tree_text:
+            lines.append("  Process Tree:")
+            lines.append("")
+            lines.append(tree_text)
+            lines.append("")
+
+        return lines
+
+    def _build_attack_chains_section(self) -> list[str]:
+        """Build the correlated attack chains section."""
+        if not self.process_analyzer:
+            return []
+
+        chains = self.process_analyzer.get_attack_chains()
+        if not chains:
+            return []
+
+        lines = [
+            "== CORRELATED ATTACK CHAINS ===================================",
+            "",
+        ]
+
+        for idx, chain in enumerate(chains, 1):
+            depth = chain["depth"]
+            chain_str = " -> ".join(chain["chain"])
+            lines.append(f"  Chain #{idx} (depth: {depth}):")
+            lines.append(f"    {chain_str}")
+            lines.append("")
+
+        return lines
+
+    def _build_top_suspicious_section(self) -> list[str]:
+        """Build top 5 suspicious processes ranked by effective score."""
+        if not self.correlator:
+            return []
+
+        groups = self.correlator.get_groups()
+        if not groups:
+            return []
+
+        # Rank by total effective score per group
+        ranked = sorted(
+            groups.values(),
+            key=lambda g: sum(f.effective_score for f in g.findings),
+            reverse=True,
+        )[:5]
+
+        lines = [
+            "== TOP SUSPICIOUS PROCESSES ===================================",
+            "",
+        ]
+
+        for idx, group in enumerate(ranked, 1):
+            total_eff = sum(f.effective_score for f in group.findings)
+            indicators = ", ".join(sorted(group.indicator_types))
+            lines.append(f"  {idx}. {group.process}")
+            lines.append(f"     Confidence : {group.confidence} ({group.multiplier}x)")
+            lines.append(f"     Eff. Score  : +{total_eff}")
+            lines.append(f"     Indicators  : {indicators}")
+            lines.append(f"     Findings    : {len(group.findings)}")
+            mitre = ", ".join(sorted(group.mitre_ids)) if group.mitre_ids else "N/A"
+            lines.append(f"     MITRE IDs   : {mitre}")
+            lines.append("")
+
+        return lines
+
+    def _build_most_severe_section(self) -> list[str]:
+        """Build most severe behaviors section."""
+        if not self.findings:
+            return []
+
+        # Sort by effective_score descending
+        severe = sorted(self.findings, key=lambda f: f.effective_score, reverse=True)[:5]
+
+        lines = [
+            "== MOST SEVERE BEHAVIORS ======================================",
+            "",
+        ]
+
+        for idx, f in enumerate(severe, 1):
+            mitre_str = f" [{f.mitre_id}]" if f.mitre_id else ""
+            lines.append(f"  {idx}. [{f.severity}] [{f.confidence}]{mitre_str} +{f.effective_score}")
+            lines.append(f"     {f.description}")
+            lines.append(f"     Process: {f.process}")
+            lines.append(f"     Evidence: {f.evidence[:100]}")
+            lines.append("")
+
         return lines
 
     def _build_correlation_section(self) -> list[str]:
@@ -241,15 +372,13 @@ class ReportGenerator:
             "",
         ]
 
-        # Category caps
         if self.scorer.category_scores:
             lines.append("  Category Caps:")
             for cat, score in sorted(self.scorer.category_scores.items()):
                 cap = self.scorer.category_caps.get(cat, 100)
-                lines.append(f"    {cat:10s}: {score:3d}/{cap}")
+                lines.append(f"    {cat:15s}: {score:3d}/{cap}")
             lines.append("")
 
-        # Per-rule breakdown
         lines.append("  Per-Rule Scores:")
         for item in self.scorer.breakdown:
             lines.append(
@@ -286,14 +415,18 @@ class ReportGenerator:
         """Create the final_report.txt content."""
         lines = [
             "=" * 70,
-            "  DFIR AUTOMATED FORENSIC REPORT  (v1.1)",
+            "  DFIR AUTOMATED FORENSIC REPORT  (v1.2)",
             f"  Generated: {timestamp()}",
             "=" * 70,
             "",
         ]
 
         lines.extend(self._build_executive_summary())
+        lines.extend(self._build_most_severe_section())
+        lines.extend(self._build_top_suspicious_section())
         lines.extend(self._build_mitre_section())
+        lines.extend(self._build_process_relationship_section())
+        lines.extend(self._build_attack_chains_section())
         lines.extend(self._build_correlation_section())
         lines.extend(self._build_ioc_section())
         lines.extend(self._build_category_section())

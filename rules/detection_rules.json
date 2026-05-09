@@ -78,6 +78,61 @@
             "mitre_technique": "Application Layer Protocol"
         }
     },
+    "process_relationship_indicators": {
+        "office_child_spawn": {
+            "description": "Office application spawning suspicious child process",
+            "parents": ["winword.exe", "excel.exe", "powerpnt.exe", "outlook.exe", "msaccess.exe", "mspub.exe"],
+            "suspicious_children": ["cmd.exe", "powershell.exe", "wscript.exe", "cscript.exe", "mshta.exe", "certutil.exe", "regsvr32.exe", "rundll32.exe"],
+            "score": 20,
+            "severity": "HIGH",
+            "mitre_id": "T1566.001",
+            "mitre_technique": "Phishing: Spearphishing Attachment"
+        },
+        "script_child_spawn": {
+            "description": "Scripting engine spawning executable process",
+            "parents": ["wscript.exe", "cscript.exe", "mshta.exe"],
+            "suspicious_children": ["_any_non_system_"],
+            "score": 20,
+            "severity": "HIGH",
+            "mitre_id": "T1059.005",
+            "mitre_technique": "Command and Scripting Interpreter: Visual Basic"
+        },
+        "explorer_temp_child": {
+            "description": "Explorer spawning process from temp/suspicious location",
+            "parents": ["explorer.exe"],
+            "suspicious_children": ["_temp_executable_"],
+            "score": 15,
+            "severity": "MEDIUM",
+            "mitre_id": "T1204.002",
+            "mitre_technique": "User Execution: Malicious File"
+        },
+        "svchost_shell_spawn": {
+            "description": "svchost.exe spawning command shell or scripting engine",
+            "parents": ["svchost.exe"],
+            "suspicious_children": ["cmd.exe", "powershell.exe", "wscript.exe", "cscript.exe"],
+            "score": 20,
+            "severity": "HIGH",
+            "mitre_id": "T1055",
+            "mitre_technique": "Process Injection"
+        },
+        "browser_shell_spawn": {
+            "description": "Browser spawning command shell",
+            "parents": ["chrome.exe", "firefox.exe", "msedge.exe", "iexplore.exe", "opera.exe", "brave.exe"],
+            "suspicious_children": ["cmd.exe", "powershell.exe", "wscript.exe", "cscript.exe"],
+            "score": 15,
+            "severity": "MEDIUM",
+            "mitre_id": "T1189",
+            "mitre_technique": "Drive-by Compromise"
+        },
+        "process_spawning_storm": {
+            "description": "Process spawning abnormally high number of children",
+            "threshold": 5,
+            "score": 15,
+            "severity": "MEDIUM",
+            "mitre_id": "T1059",
+            "mitre_technique": "Command and Scripting Interpreter"
+        }
+    },
     "scoring_thresholds": {
         "normal":             { "min": 0,  "max": 30,  "label": "NORMAL",             "color": "green"  },
         "suspicious":         { "min": 31, "max": 60,  "label": "SUSPICIOUS",          "color": "yellow" },
@@ -86,7 +141,8 @@
     "scoring_caps": {
         "Memory":  40,
         "Process": 35,
-        "Network": 25
+        "Network": 25,
+        "Relationship": 30
     },
     "confidence_multipliers": {
         "LOW":      0.3,

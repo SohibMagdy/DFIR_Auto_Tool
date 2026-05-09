@@ -1,15 +1,15 @@
 """
-correlator.py -- Multi-indicator behavioral correlation engine.
+correlator.py -- Multi-indicator behavioral correlation engine (v1.2).
 
 Groups raw findings by process, evaluates what combination of indicators
 each process exhibits, and assigns a confidence level. Adjusts each
 finding's effective_score based on the correlation multiplier.
 
-Confidence model:
-  LOW      -- single isolated indicator (e.g. RWX alone)
-  MEDIUM   -- two correlated indicators (e.g. RWX + suspicious process name)
-  HIGH     -- three indicators (e.g. RWX + MZ header + temp execution)
-  CRITICAL -- full attack chain (RWX + MZ + temp + network/scripting)
+v1.2 changes:
+  - Indicator strength tiers (STRONG/MODERATE/WEAK) for smarter escalation
+  - process_spawn category integrated from process_analyzer
+  - Tighter escalation logic: weak-only combos stay LOW
+  - Execution chain scoring feeds into confidence
 """
 
 import re
@@ -23,9 +23,6 @@ logger = setup_logging()
 
 
 # ─── Indicator categories for correlation ────────────────────────────────────
-# Each finding's rule_id is mapped to a broader indicator category.
-# Correlation counts unique categories per process, not raw finding count.
-
 INDICATOR_CATEGORIES: dict[str, str] = {
     # Memory indicators
     "rwx_memory":           "memory_rwx",
@@ -42,15 +39,27 @@ INDICATOR_CATEGORIES: dict[str, str] = {
     # Network indicators
     "suspicious_port":      "network",
     "external_connection":  "network",
+    # Process relationship indicators (v1.2)
+    "office_child_spawn":   "process_spawn",
+    "script_child_spawn":   "process_spawn",
+    "explorer_temp_child":  "process_spawn",
+    "svchost_shell_spawn":  "process_spawn",
+    "browser_shell_spawn":  "process_spawn",
+    "process_spawning_storm": "process_spawn",
 }
+
+# ─── Indicator strength tiers ────────────────────────────────────────────────
+# Used for smarter escalation. Two WEAK indicators should not produce MEDIUM.
+STRONG_INDICATORS = {"memory_injection", "scripting", "random_name", "process_spawn"}
+MODERATE_INDICATORS = {"temp_exec", "network", "hidden_proc"}
+WEAK_INDICATORS = {"memory_rwx"}
 
 
 def _normalize_process(proc: str) -> str:
     """Normalize a process string for grouping.
 
     Strips PID suffixes, paths, .exe extension, and lowercases.
-    Uses first 6 chars to handle column-truncated names
-    (e.g. 'explore' and 'explorer.exe' -> 'explor').
+    Uses first 6 chars to handle column-truncated names.
     """
     clean = re.sub(r"\s*\(PID:.*?\)", "", proc).strip()
     if "\\" in clean:
@@ -85,28 +94,52 @@ class CorrelationGroup:
             self.mitre_ids.add(finding.mitre_id)
 
     def evaluate_confidence(self, multipliers: dict) -> None:
-        """Determine confidence level based on indicator diversity."""
+        """Determine confidence level based on indicator diversity and strength.
+
+        v1.2: Uses indicator strength tiers to prevent weak-only combos
+        from escalating. Two WEAK indicators stay LOW.
+        """
         n = len(self.indicator_types)
         types = self.indicator_types
 
-        # CRITICAL: 4+ unique indicator categories, or specific deadly combos
-        if n >= 4:
+        # Count by strength tier
+        strong_count = len(types & STRONG_INDICATORS)
+        moderate_count = len(types & MODERATE_INDICATORS)
+        weak_count = len(types & WEAK_INDICATORS)
+
+        # ── CRITICAL: 4+ categories, or specific deadly combos ───────────
+        if n >= 4 and strong_count >= 1:
             self.confidence = "CRITICAL"
         elif (
             "memory_injection" in types
             and "temp_exec" in types
-            and ("network" in types or "scripting" in types)
+            and ("network" in types or "scripting" in types or "process_spawn" in types)
         ):
             self.confidence = "CRITICAL"
-        # HIGH: 3 categories, or injection + one other strong signal
-        elif n >= 3:
+        elif (
+            "process_spawn" in types
+            and "memory_injection" in types
+            and n >= 3
+        ):
+            self.confidence = "CRITICAL"
+
+        # ── HIGH: 3+ with at least 1 STRONG, or injection + 1 STRONG ────
+        elif n >= 3 and strong_count >= 1:
             self.confidence = "HIGH"
-        elif "memory_injection" in types and n >= 2:
+        elif "memory_injection" in types and strong_count >= 1:
             self.confidence = "HIGH"
-        # MEDIUM: 2 categories
-        elif n >= 2:
+        elif "process_spawn" in types and (strong_count + moderate_count) >= 2:
+            self.confidence = "HIGH"
+
+        # ── MEDIUM: 2+ with at least 1 STRONG or 2 MODERATE ─────────────
+        elif n >= 2 and strong_count >= 1:
             self.confidence = "MEDIUM"
-        # LOW: single indicator
+        elif moderate_count >= 2:
+            self.confidence = "MEDIUM"
+        elif n >= 3 and weak_count <= 1:
+            self.confidence = "MEDIUM"
+
+        # ── LOW: single category, or weak-only combinations ──────────────
         else:
             self.confidence = "LOW"
 

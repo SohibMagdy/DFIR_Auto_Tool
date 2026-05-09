@@ -1,14 +1,15 @@
 """
-main.py -- DFIR Automation Tool entry point (v1.1).
+main.py -- DFIR Automation Tool entry point (v1.2).
 
 Orchestrates the full forensic analysis pipeline:
   1. Run Volatility 3 plugins against a memory dump
   2. Parse raw outputs into structured data
-  3. Detect suspicious indicators
-  4. Correlate indicators across processes
-  5. Extract IOCs
-  6. Calculate threat score
-  7. Generate forensic reports
+  3. Analyze process relationships (parent-child chains)
+  4. Detect suspicious indicators
+  5. Correlate indicators across processes
+  6. Extract IOCs
+  7. Calculate threat score
+  8. Generate forensic reports
 """
 
 import sys
@@ -25,6 +26,7 @@ from utils import (
 )
 from volatility_runner import VolatilityRunner
 from parser import OutputParser
+from process_analyzer import ProcessAnalyzer
 from detector import ThreatDetector
 from correlator import CorrelationEngine
 from ioc_extractor import IOCExtractor
@@ -35,7 +37,7 @@ from report_generator import ReportGenerator
 def parse_args() -> argparse.Namespace:
     """Parse command-line arguments."""
     ap = argparse.ArgumentParser(
-        description="DFIR Automation Tool v1.1 -- Memory Forensics with Volatility 3",
+        description="DFIR Automation Tool v1.2 -- Memory Forensics with Volatility 3",
     )
     ap.add_argument(
         "-f", "--file",
@@ -69,7 +71,7 @@ def main() -> None:
 
     console.print(f"[dim]Analysis started at {timestamp()}[/dim]")
     console.print(f"[dim]Memory dump: {args.file}[/dim]")
-    console.print(f"[dim]Version: 1.1 (Correlation Engine)[/dim]\n")
+    console.print(f"[dim]Version: 1.2 (Process Intelligence)[/dim]\n")
     pipeline_start = time.time()
 
     # ── Stage 1: Volatility Execution ────────────────────────────────────
@@ -104,27 +106,41 @@ def main() -> None:
     parser = OutputParser()
     parsed_data = parser.parse_all()
 
-    # ── Stage 3: Detect Threats ──────────────────────────────────────────
+    # ── Stage 3: Process Relationship Analysis ───────────────────────────
+    proc_analyzer = ProcessAnalyzer()
+    relationships = proc_analyzer.analyze(parsed_data)
+
+    # ── Stage 4: Detect Threats ──────────────────────────────────────────
     detector = ThreatDetector()
     findings = detector.analyze(parsed_data, raw_text=parser.raw_text)
 
-    # ── Stage 4: Behavioral Correlation ──────────────────────────────────
+    # Integrate process relationship findings
+    if relationships:
+        detector.integrate_process_relationships(relationships)
+        findings = detector.findings  # Refresh reference after integration
+
+    # ── Stage 5: Behavioral Correlation ──────────────────────────────────
     correlator = CorrelationEngine()
     findings = correlator.correlate(findings)
 
-    # ── Stage 5: IOC Extraction ──────────────────────────────────────────
+    # ── Stage 6: IOC Extraction ──────────────────────────────────────────
     ioc_extractor = IOCExtractor()
-    ioc_extractor.extract(raw_text=parser.raw_text)
+    ioc_extractor.extract(
+        raw_text=parser.raw_text,
+        parsed_data=parsed_data,
+        findings=findings,
+    )
 
-    # ── Stage 6: Score ───────────────────────────────────────────────────
+    # ── Stage 7: Score ───────────────────────────────────────────────────
     scorer = ThreatScorer()
     scorer.calculate(findings)
 
-    # ── Stage 7: Generate Reports ────────────────────────────────────────
+    # ── Stage 8: Generate Reports ────────────────────────────────────────
     reporter = ReportGenerator(
         findings, scorer,
         correlator=correlator,
         ioc_extractor=ioc_extractor,
+        process_analyzer=proc_analyzer,
     )
     reporter.generate()
 

@@ -33,6 +33,8 @@ class VolatilityRunner:
     PLUGINS: dict[str, tuple[str, str]] = {
         "System Info":      ("windows.info",     "windows_info.txt"),
         "Command Lines":    ("windows.cmdline",  "windows_cmdline.txt"),
+        "Process List":     ("windows.pslist",   "windows_pslist.txt"),
+        "Process Tree":     ("windows.pstree",   "windows_pstree.txt"),
         "Network Stat":     ("windows.netstat",  "windows_netstat.txt"),
         "Network Scan":     ("windows.netscan",  "windows_netscan.txt"),
         "Malfind":          ("windows.malfind",  "windows_malfind.txt"),
@@ -40,7 +42,7 @@ class VolatilityRunner:
     }
 
     # Plugins that may be unavailable in some Volatility builds
-    OPTIONAL_PLUGINS: set[str] = {"Network Scan", "Network Stat"}
+    OPTIONAL_PLUGINS: set[str] = {"Network Scan", "Network Stat", "Process List", "Process Tree"}
 
     def __init__(self, memory_dump: str) -> None:
         """

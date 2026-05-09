@@ -1,17 +1,17 @@
 """
-detector.py -- Threat detection engine (v1.1).
+detector.py -- Threat detection engine (v1.2).
 
 Applies detection rules against parsed Volatility output to identify
 suspicious and malicious indicators.
 
-v1.1 changes:
-  - Whitelist integration for false positive reduction
-  - MITRE ATT&CK ID mapping on every finding
-  - Improved deduplication (prefers named over Unknown)
-  - confidence and effective_score fields on Finding
-  - Removed hardcoded process-specific detectors (now handled by correlator)
+v1.2 changes:
+  - Malfind block context: no more "Unknown (PID: ?)" for MZ headers
+  - Multi-factor randomness scoring (entropy, consonant ratio, etc.)
+  - Process relationship findings integrated via process_analyzer
+  - Extended whitelist used instead of duplicate legit_names set
 """
 
+import math
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -19,7 +19,10 @@ from pathlib import Path
 from rich.table import Table
 
 from utils import console, load_rules, setup_logging, separator, OUTPUT_DIR
-from whitelist import should_suppress, normalize_process_name
+from whitelist import (
+    should_suppress, normalize_process_name,
+    WHITELISTED_PROCESSES, is_whitelisted_process,
+)
 
 logger = setup_logging()
 
@@ -52,6 +55,24 @@ class Finding:
     confidence: str = "LOW"
     effective_score: int = 0
     correlation_group: str = ""
+
+
+# ── Extended legit names for random-name detection ───────────────────────────
+# Uses WHITELISTED_PROCESSES plus Windows service/utility names that have
+# consonant-heavy patterns but are legitimate.
+EXTENDED_LEGIT_NAMES: set[str] = WHITELISTED_PROCESSES | {
+    "wmpnetwk.exe", "sppextcomobj.exe", "dashost.exe", "dfsrs.exe",
+    "dfssvc.exe", "lsm.exe", "trustedinstaller.exe", "tiworker.exe",
+    "musnotification.exe", "compattelrunner.exe", "gamebarpresencewriter.exe",
+    "officebackgroundtaskhandler.exe", "phoneexperiencehost.exe",
+    "microsoftedgeupdate.exe", "msedgewebview2.exe", "crashpad_handler.exe",
+    "dllhost.exe", "jusched.exe", "jucheck.exe", "werfault.exe",
+    "ngentask.exe", "ngen.exe", "crossgen.exe", "vshost.exe",
+    "consent.exe", "logonui.exe", "utilman.exe", "credentialuibroker.exe",
+    "compressedmemory.exe", "vssvc.exe", "mscorsvw.exe",
+    "backgroundtransferhost.exe", "lockapp.exe", "yourphone.exe",
+    "systemsettingsbroker.exe", "windows.immersivecontrolpanel.exe",
+}
 
 
 class ThreatDetector:
@@ -133,63 +154,82 @@ class ThreatDetector:
     #  DETECTION METHODS
     # ═══════════════════════════════════════════════════════════════════════
 
-    def _detect_rwx_memory(self, records: list[dict], raw: str) -> None:
-        """Detect PAGE_EXECUTE_READWRITE memory regions."""
+    def _detect_rwx_memory(self, records: list[dict], raw: str,
+                           malfind_blocks: list[dict]) -> None:
+        """Detect PAGE_EXECUTE_READWRITE memory regions.
+
+        v1.2: Uses malfind_blocks for process-context-aware detection.
+        """
         rule = self.rules["memory_indicators"]["rwx_memory"]
 
-        # Structured records
-        for rec in records:
-            combined = " ".join(str(v) for v in rec.values())
-            if "PAGE_EXECUTE_READWRITE" in combined:
-                proc = rec.get("Process", rec.get("Name", "Unknown"))
-                pid = rec.get("PID", "?")
+        # ── Primary: malfind blocks (v1.2 -- context-aware) ──────────────
+        for block in malfind_blocks:
+            if block.get("is_rwx"):
+                proc = block["process"]
+                pid = block["pid"]
                 self._add("rwx_memory", "Memory", rule,
                           f"{proc} (PID: {pid})",
-                          f"PAGE_EXECUTE_READWRITE in: {rec.get('_raw_line', combined)[:150]}",
+                          f"PAGE_EXECUTE_READWRITE at {block.get('start_vpn', '?')}",
                           "Dump the suspicious memory region and scan with YARA / antivirus.")
 
-        # Raw text line scan
-        if "PAGE_EXECUTE_READWRITE" in raw:
-            for line in raw.splitlines():
-                if "PAGE_EXECUTE_READWRITE" not in line:
-                    continue
-                m = re.search(r"(\S+\.exe)", line, re.IGNORECASE)
-                proc = m.group(1) if m else "Unknown"
-                pid_m = re.search(r"^(\d+)\s", line.strip())
-                pid = pid_m.group(1) if pid_m else "?"
-                self._add("rwx_memory", "Memory", rule,
-                          f"{proc} (PID: {pid})",
-                          f"Line: {line.strip()[:150]}",
-                          "Dump the suspicious memory region and scan with YARA / antivirus.")
+        # ── Fallback: structured records (if blocks unavailable) ─────────
+        if not malfind_blocks:
+            for rec in records:
+                combined = " ".join(str(v) for v in rec.values())
+                if "PAGE_EXECUTE_READWRITE" in combined:
+                    proc = rec.get("Process", rec.get("Name", "Unknown"))
+                    pid = rec.get("PID", "?")
+                    self._add("rwx_memory", "Memory", rule,
+                              f"{proc} (PID: {pid})",
+                              f"PAGE_EXECUTE_READWRITE in: {rec.get('_raw_line', combined)[:150]}",
+                              "Dump the suspicious memory region and scan with YARA / antivirus.")
 
-    def _detect_process_injection(self, records: list[dict], raw: str) -> None:
-        """Detect MZ headers and PE signatures in memory."""
+            # Raw text line scan
+            if "PAGE_EXECUTE_READWRITE" in raw:
+                for line in raw.splitlines():
+                    if "PAGE_EXECUTE_READWRITE" not in line:
+                        continue
+                    m = re.search(r"(\S+\.exe)", line, re.IGNORECASE)
+                    proc = m.group(1) if m else "Unknown"
+                    pid_m = re.search(r"^(\d+)\s", line.strip())
+                    pid = pid_m.group(1) if pid_m else "?"
+                    self._add("rwx_memory", "Memory", rule,
+                              f"{proc} (PID: {pid})",
+                              f"Line: {line.strip()[:150]}",
+                              "Dump the suspicious memory region and scan with YARA / antivirus.")
+
+    def _detect_process_injection(self, records: list[dict], raw: str,
+                                  malfind_blocks: list[dict]) -> None:
+        """Detect MZ headers and PE signatures in memory.
+
+        v1.2: Uses malfind_blocks to attribute MZ findings to the
+        correct owning process instead of 'Unknown (hex dump)'.
+        """
         rule = self.rules["memory_indicators"]["process_injection"]
-        keywords = ["MZ header", "This program cannot be run", "4d 5a"]
 
-        # Structured records
-        for rec in records:
-            combined = " ".join(str(v) for v in rec.values())
-            hex_block = rec.get("_hex_block", "")
-            full_text = f"{combined} {hex_block}"
-            if any(kw.lower() in full_text.lower() for kw in keywords):
-                proc = rec.get("Process", rec.get("Name", "Unknown"))
-                pid = rec.get("PID", "?")
+        # ── Primary: malfind blocks (v1.2 -- no more Unknown) ────────────
+        for block in malfind_blocks:
+            if block.get("has_mz"):
+                proc = block["process"]
+                pid = block["pid"]
                 self._add("process_injection", "Memory", rule,
                           f"{proc} (PID: {pid})",
-                          "MZ/PE header found in executable memory region",
+                          f"MZ/PE header in memory at {block.get('start_vpn', '?')}",
                           "Extract and reverse-engineer the injected code.")
 
-        # Hex dump line scan
-        for line in raw.splitlines():
-            stripped = line.strip().lower()
-            if re.match(r"^0x[0-9a-f]+", stripped):
-                if "4d 5a" in stripped or "4d5a" in stripped:
-                    # Try to find which process this hex belongs to
-                    # by looking at the preceding lines
+        # ── Fallback: structured records ─────────────────────────────────
+        if not malfind_blocks:
+            keywords = ["MZ header", "This program cannot be run", "4d 5a"]
+            for rec in records:
+                combined = " ".join(str(v) for v in rec.values())
+                hex_block = rec.get("_hex_block", "")
+                full_text = f"{combined} {hex_block}"
+                if any(kw.lower() in full_text.lower() for kw in keywords):
+                    proc = rec.get("Process", rec.get("Name", "Unknown"))
+                    pid = rec.get("PID", "?")
                     self._add("process_injection", "Memory", rule,
-                              "Unknown (hex dump)",
-                              f"Hex line: {line.strip()[:120]}",
+                              f"{proc} (PID: {pid})",
+                              "MZ/PE header found in executable memory region",
                               "Extract and reverse-engineer the injected code.")
 
     def _detect_wscript(self, records: list[dict], raw: str) -> None:
@@ -267,41 +307,91 @@ class ThreatDetector:
                           "Verify binary hash against known-good sources.")
 
     def _detect_random_names(self, records, raw_cmdline: str, raw_psscan: str) -> None:
-        """Detect executables with randomized names."""
+        """Detect executables with randomized names using multi-factor scoring.
+
+        v1.2: Replaces simple heuristics with a multi-factor randomness
+        score combining entropy, consonant ratio, digit mixing, and
+        consecutive consonant analysis.
+        """
         rule = self.rules["process_indicators"]["random_executable"]
 
-        legit_names = {
-            "svchost.exe", "explorer.exe", "lsass.exe", "csrss.exe",
-            "winlogon.exe", "services.exe", "smss.exe", "wininit.exe",
-            "taskhostw.exe", "taskhost.exe", "dwm.exe", "conhost.exe",
-            "cmd.exe", "powershell.exe", "rundll32.exe", "dllhost.exe",
-            "msiexec.exe", "spoolsv.exe", "searchindexer.exe",
-            "wmiprvse.exe", "wscript.exe", "cscript.exe", "notepad.exe",
-            "regedit.exe", "taskmgr.exe", "mmc.exe", "ctfmon.exe",
-            "system.exe", "registry.exe", "fontdrvhost.exe",
-            "runtimebroker.exe", "applicationframehost.exe",
-            "shellexperiencehost.exe", "sihost.exe", "lsaiso.exe",
-            "chrome.exe", "firefox.exe", "msedge.exe", "iexplore.exe",
-            "onedrive.exe", "teams.exe", "outlook.exe", "excel.exe",
-            "winword.exe", "powerpnt.exe", "msdtc.exe", "sppsvc.exe",
-            "securityhealthservice.exe", "sgrmbroker.exe",
-        }
+        def _shannon_entropy(s: str) -> float:
+            """Calculate Shannon entropy of a string."""
+            if not s:
+                return 0.0
+            freq = {}
+            for c in s:
+                freq[c] = freq.get(c, 0) + 1
+            length = len(s)
+            return -sum(
+                (count / length) * math.log2(count / length)
+                for count in freq.values()
+            )
 
-        def _is_random(name: str) -> bool:
+        def _calc_randomness_score(name: str) -> float:
+            """Return 0.0-1.0 randomness score using multiple heuristics."""
             base = name.lower().replace(".exe", "")
-            if len(base) < 4 or name.lower() in legit_names:
-                return False
+            if len(base) < 4:
+                return 0.0
+
+            score = 0.0
             vowels = set("aeiou")
+
+            # 1. Shannon entropy (high entropy = random)
+            # Natural English words: ~3.0-3.5 bits, random: ~4.0+
+            entropy = _shannon_entropy(base)
+            if entropy > 4.0:
+                score += 0.30
+            elif entropy > 3.5:
+                score += 0.15
+
+            # 2. Consonant/vowel ratio (natural ~1.5, random ~3.0+)
             v_count = sum(1 for c in base if c in vowels)
             c_count = sum(1 for c in base if c.isalpha() and c not in vowels)
-            if c_count > 0 and v_count > 0 and c_count / v_count > 4.0 and len(base) >= 6:
-                return True
-            upper_in_mid = sum(1 for c in base[1:] if c.isupper())
-            if upper_in_mid >= 2 and len(base) >= 6:
-                return True
-            if v_count == 0 and len(base) >= 5:
-                return True
-            return False
+            if v_count > 0:
+                ratio = c_count / v_count
+                if ratio > 4.0:
+                    score += 0.25
+                elif ratio > 3.0:
+                    score += 0.15
+            elif c_count >= 4:
+                # No vowels at all with 4+ consonants
+                score += 0.30
+
+            # 3. Consecutive consonants (>4 = suspicious)
+            max_consecutive = 0
+            current = 0
+            for c in base:
+                if c.isalpha() and c not in vowels:
+                    current += 1
+                    max_consecutive = max(max_consecutive, current)
+                else:
+                    current = 0
+            if max_consecutive >= 5:
+                score += 0.20
+            elif max_consecutive >= 4:
+                score += 0.10
+
+            # 4. Mixed-case mid-word (rAnDoM is suspicious, CamelCase is not)
+            if len(name.replace(".exe", "")) >= 6:
+                upper_in_mid = sum(1 for c in name[1:-4] if c.isupper())
+                lower_in_mid = sum(1 for c in name[1:-4] if c.islower())
+                if upper_in_mid >= 3 and lower_in_mid >= 3:
+                    score += 0.15
+
+            # 5. Digit mixing (abc123xyz = suspicious for executables)
+            has_digits = any(c.isdigit() for c in base)
+            has_alpha = any(c.isalpha() for c in base)
+            if has_digits and has_alpha:
+                digit_ratio = sum(1 for c in base if c.isdigit()) / len(base)
+                if 0.2 < digit_ratio < 0.6:
+                    score += 0.15
+
+            # 6. Name length (very long random names)
+            if len(base) >= 12:
+                score += 0.10
+
+            return min(score, 1.0)
 
         seen: set[str] = set()
         exe_regex = re.compile(r"\b(\S+\.exe)\b", re.IGNORECASE)
@@ -314,9 +404,17 @@ class ThreatDetector:
             if name.lower() in seen:
                 continue
             seen.add(name.lower())
-            if _is_random(name):
+
+            # Skip known legitimate names
+            if name.lower() in EXTENDED_LEGIT_NAMES:
+                continue
+            if is_whitelisted_process(name):
+                continue
+
+            randomness = _calc_randomness_score(name)
+            if randomness >= 0.55:  # Threshold for flagging
                 self._add("random_executable", "Process", rule, name,
-                          f"Randomised executable name: {name}",
+                          f"Randomised name (score: {randomness:.2f}): {name}",
                           "Check file origin, digital signature, and VirusTotal hash.")
 
     def _detect_hidden_processes(self, psscan_recs, cmdline_recs) -> None:
@@ -355,6 +453,33 @@ class ThreatDetector:
                               "Investigate remote endpoint with threat intel feeds.")
 
     # ═══════════════════════════════════════════════════════════════════════
+    #  PROCESS RELATIONSHIP INTEGRATION
+    # ═══════════════════════════════════════════════════════════════════════
+
+    def integrate_process_relationships(self, relationships) -> None:
+        """Convert ProcessRelationship objects into Finding objects.
+
+        Called after process_analyzer.analyze() to merge relationship
+        findings into the main findings list.
+        """
+        for rel in relationships:
+            rule = {
+                "description": rel.description,
+                "severity": rel.severity,
+                "score": rel.score,
+                "mitre_id": rel.mitre_id,
+                "mitre_technique": rel.mitre_technique,
+            }
+            chain_str = " -> ".join(rel.chain) if rel.chain else ""
+            self._add(
+                rel.rule_id, "Relationship", rule,
+                f"{rel.parent_name} (PID: {rel.parent_pid})",
+                f"{rel.parent_name} -> {rel.child_name} ({rel.child_pid})"
+                + (f" | Chain: {chain_str}" if chain_str else ""),
+                "Investigate the full execution chain for lateral movement or payload delivery.",
+            )
+
+    # ═══════════════════════════════════════════════════════════════════════
     #  PUBLIC API
     # ═══════════════════════════════════════════════════════════════════════
 
@@ -373,6 +498,7 @@ class ThreatDetector:
         raw_psscan  = raw_text.get("psscan", "")  or self._read_raw("windows_psscan.txt")
 
         malfind_recs = parsed_data.get("malfind", [])
+        malfind_blocks = parsed_data.get("malfind_blocks", [])
         cmdline_recs = parsed_data.get("cmdline", [])
         netstat_recs = parsed_data.get("netstat", [])
         netscan_recs = parsed_data.get("netscan", [])
@@ -380,7 +506,7 @@ class ThreatDetector:
 
         # Debug info
         console.print("[dim]  Data available for detection:[/dim]")
-        console.print(f"[dim]    malfind : {len(malfind_recs)} records, {len(raw_malfind)} chars raw[/dim]")
+        console.print(f"[dim]    malfind : {len(malfind_recs)} records, {len(malfind_blocks)} blocks, {len(raw_malfind)} chars raw[/dim]")
         console.print(f"[dim]    cmdline : {len(cmdline_recs)} records, {len(raw_cmdline)} chars raw[/dim]")
         console.print(f"[dim]    netstat : {len(netstat_recs)} records, {len(raw_netstat)} chars raw[/dim]")
         console.print(f"[dim]    netscan : {len(netscan_recs)} records, {len(raw_netscan)} chars raw[/dim]")
@@ -389,8 +515,8 @@ class ThreatDetector:
         console.print("[bold white]  Scanning for threats...[/bold white]\n")
 
         # Run all detectors
-        self._detect_rwx_memory(malfind_recs, raw_malfind)
-        self._detect_process_injection(malfind_recs, raw_malfind)
+        self._detect_rwx_memory(malfind_recs, raw_malfind, malfind_blocks)
+        self._detect_process_injection(malfind_recs, raw_malfind, malfind_blocks)
         self._detect_wscript(cmdline_recs, raw_cmdline)
         self._detect_vbs_scripts(cmdline_recs, raw_cmdline)
         self._detect_temp_execution(cmdline_recs, raw_cmdline)
