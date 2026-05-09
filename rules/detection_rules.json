@@ -1,68 +1,97 @@
 {
     "memory_indicators": {
         "rwx_memory": {
-            "description": "PAGE_EXECUTE_READWRITE memory region detected — common in shellcode injection",
+            "description": "PAGE_EXECUTE_READWRITE memory region detected",
             "keywords": ["PAGE_EXECUTE_READWRITE"],
-            "score": 40,
-            "severity": "HIGH"
+            "score": 15,
+            "severity": "MEDIUM",
+            "mitre_id": "T1055",
+            "mitre_technique": "Process Injection"
         },
         "process_injection": {
-            "description": "Suspicious process injection — MZ/PE header found in executable memory",
+            "description": "MZ/PE header found in executable memory region",
             "keywords": ["MZ header", "This program cannot be run", "4d 5a", "MZ"],
-            "score": 45,
-            "severity": "CRITICAL"
+            "score": 25,
+            "severity": "HIGH",
+            "mitre_id": "T1055.012",
+            "mitre_technique": "Process Hollowing"
         }
     },
     "process_indicators": {
         "wscript_execution": {
-            "description": "wscript.exe execution detected — often used to run malicious VBS scripts",
+            "description": "wscript.exe / cscript.exe execution detected",
             "keywords": ["wscript.exe", "cscript.exe"],
-            "score": 30,
-            "severity": "HIGH"
+            "score": 15,
+            "severity": "MEDIUM",
+            "mitre_id": "T1059.005",
+            "mitre_technique": "Command and Scripting Interpreter: Visual Basic"
         },
         "vbs_script": {
-            "description": "VBScript file reference detected — commonly abused by malware droppers",
+            "description": "VBScript file reference detected",
             "keywords": [".vbs", ".vbe", ".wsf"],
-            "score": 30,
-            "severity": "HIGH"
+            "score": 15,
+            "severity": "MEDIUM",
+            "mitre_id": "T1059.005",
+            "mitre_technique": "Command and Scripting Interpreter: Visual Basic"
         },
         "temp_execution": {
-            "description": "Process running from Temp or AppData directory — suspicious execution path",
+            "description": "Process running from Temp or AppData directory",
             "keywords": ["\\Temp\\", "\\AppData\\", "\\tmp\\", "%TEMP%"],
-            "score": 25,
-            "severity": "MEDIUM"
+            "score": 10,
+            "severity": "LOW",
+            "mitre_id": "T1204.002",
+            "mitre_technique": "User Execution: Malicious File"
         },
         "random_executable": {
-            "description": "Executable with randomized name detected — possible malware binary",
+            "description": "Executable with randomized name detected",
             "keywords": [],
             "pattern": "^[a-z]{8,}\\.exe$|^[A-Za-z0-9]{32}\\.exe$",
-            "score": 35,
-            "severity": "HIGH"
+            "score": 20,
+            "severity": "HIGH",
+            "mitre_id": "T1036.005",
+            "mitre_technique": "Masquerading: Match Legitimate Name or Location"
         },
         "hidden_process": {
-            "description": "Hidden process detected — present in psscan but not in active process list",
+            "description": "Hidden process found in psscan but not in active list",
             "keywords": [],
-            "score": 35,
-            "severity": "HIGH"
+            "score": 20,
+            "severity": "HIGH",
+            "mitre_id": "T1564.001",
+            "mitre_technique": "Hide Artifacts: Hidden Files and Directories"
         }
     },
     "network_indicators": {
         "suspicious_ports": {
             "description": "Connection on a commonly abused port detected",
             "ports": [4444, 5555, 1234, 8080, 9999, 6666, 31337, 12345, 6667, 6697],
-            "score": 30,
-            "severity": "HIGH"
+            "score": 15,
+            "severity": "MEDIUM",
+            "mitre_id": "T1105",
+            "mitre_technique": "Ingress Tool Transfer"
         },
         "external_connection": {
             "description": "External network connection from suspicious process",
             "keywords": [],
-            "score": 20,
-            "severity": "MEDIUM"
+            "score": 10,
+            "severity": "LOW",
+            "mitre_id": "T1071",
+            "mitre_technique": "Application Layer Protocol"
         }
     },
     "scoring_thresholds": {
-        "normal": { "min": 0, "max": 30, "label": "NORMAL", "color": "green" },
-        "suspicious": { "min": 31, "max": 60, "label": "SUSPICIOUS", "color": "yellow" },
-        "highly_suspicious": { "min": 61, "max": 100, "label": "HIGHLY SUSPICIOUS", "color": "red" }
+        "normal":             { "min": 0,  "max": 30,  "label": "NORMAL",             "color": "green"  },
+        "suspicious":         { "min": 31, "max": 60,  "label": "SUSPICIOUS",          "color": "yellow" },
+        "highly_suspicious":  { "min": 61, "max": 100, "label": "HIGHLY SUSPICIOUS",   "color": "red"    }
+    },
+    "scoring_caps": {
+        "Memory":  40,
+        "Process": 35,
+        "Network": 25
+    },
+    "confidence_multipliers": {
+        "LOW":      0.3,
+        "MEDIUM":   0.7,
+        "HIGH":     1.0,
+        "CRITICAL": 1.5
     }
 }

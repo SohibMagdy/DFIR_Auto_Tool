@@ -1,13 +1,14 @@
 """
-main.py — DFIR Automation Tool entry point.
+main.py -- DFIR Automation Tool entry point (v1.1).
 
 Orchestrates the full forensic analysis pipeline:
-  1. Check plugin availability
-  2. Run Volatility 3 plugins against a memory dump
-  3. Parse raw outputs into structured data
-  4. Detect suspicious indicators
-  5. Calculate threat score
-  6. Generate forensic reports
+  1. Run Volatility 3 plugins against a memory dump
+  2. Parse raw outputs into structured data
+  3. Detect suspicious indicators
+  4. Correlate indicators across processes
+  5. Extract IOCs
+  6. Calculate threat score
+  7. Generate forensic reports
 """
 
 import sys
@@ -25,6 +26,8 @@ from utils import (
 from volatility_runner import VolatilityRunner
 from parser import OutputParser
 from detector import ThreatDetector
+from correlator import CorrelationEngine
+from ioc_extractor import IOCExtractor
 from scoring import ThreatScorer
 from report_generator import ReportGenerator
 
@@ -32,7 +35,7 @@ from report_generator import ReportGenerator
 def parse_args() -> argparse.Namespace:
     """Parse command-line arguments."""
     ap = argparse.ArgumentParser(
-        description="DFIR Automation Tool — Memory Forensics with Volatility 3",
+        description="DFIR Automation Tool v1.1 -- Memory Forensics with Volatility 3",
     )
     ap.add_argument(
         "-f", "--file",
@@ -65,36 +68,35 @@ def main() -> None:
     display_banner()
 
     console.print(f"[dim]Analysis started at {timestamp()}[/dim]")
-    console.print(f"[dim]Memory dump: {args.file}[/dim]\n")
+    console.print(f"[dim]Memory dump: {args.file}[/dim]")
+    console.print(f"[dim]Version: 1.1 (Correlation Engine)[/dim]\n")
     pipeline_start = time.time()
 
     # ── Stage 1: Volatility Execution ────────────────────────────────────
     if args.skip_vol:
-        console.print("[yellow]⏭ Skipping Volatility execution (--skip-vol)[/yellow]\n")
+        console.print("[yellow][!] Skipping Volatility execution (--skip-vol)[/yellow]\n")
     else:
         try:
             runner = VolatilityRunner(args.file)
             results = runner.run_all()
 
-            # Abort if every plugin failed
             if all(r["status"] == "error" for r in results.values()):
-                console.print("[bold red]✖ All plugins failed. Aborting.[/bold red]")
+                console.print("[bold red][X] All plugins failed. Aborting.[/bold red]")
                 sys.exit(1)
 
-            # Report skipped / unavailable plugins gracefully
             for name, info in results.items():
                 if info["status"] in ("error", "warning"):
                     console.print(
-                        f"[yellow]⚠ Plugin '{name}' had issues — "
+                        f"[yellow][!] Plugin '{name}' had issues -- "
                         f"detection will proceed with available data[/yellow]"
                     )
 
         except FileNotFoundError:
-            console.print("[bold red]✖ Cannot proceed without a valid memory dump.[/bold red]")
+            console.print("[bold red][X] Cannot proceed without a valid memory dump.[/bold red]")
             sys.exit(1)
         except Exception as exc:
             logger.exception("Unexpected error during Volatility execution")
-            console.print(f"[bold red]✖ Fatal error: {exc}[/bold red]")
+            console.print(f"[bold red][X] Fatal error: {exc}[/bold red]")
             sys.exit(1)
 
     # ── Stage 2: Parse Outputs ───────────────────────────────────────────
@@ -106,18 +108,30 @@ def main() -> None:
     detector = ThreatDetector()
     findings = detector.analyze(parsed_data, raw_text=parser.raw_text)
 
-    # ── Stage 4: Score ───────────────────────────────────────────────────
+    # ── Stage 4: Behavioral Correlation ──────────────────────────────────
+    correlator = CorrelationEngine()
+    findings = correlator.correlate(findings)
+
+    # ── Stage 5: IOC Extraction ──────────────────────────────────────────
+    ioc_extractor = IOCExtractor()
+    ioc_extractor.extract(raw_text=parser.raw_text)
+
+    # ── Stage 6: Score ───────────────────────────────────────────────────
     scorer = ThreatScorer()
     scorer.calculate(findings)
 
-    # ── Stage 5: Generate Reports ────────────────────────────────────────
-    reporter = ReportGenerator(findings, scorer)
+    # ── Stage 7: Generate Reports ────────────────────────────────────────
+    reporter = ReportGenerator(
+        findings, scorer,
+        correlator=correlator,
+        ioc_extractor=ioc_extractor,
+    )
     reporter.generate()
 
     # ── Done ─────────────────────────────────────────────────────────────
     elapsed = round(time.time() - pipeline_start, 2)
     separator("Pipeline Complete")
-    console.print(f"[bold green]✔ Analysis finished in {elapsed}s[/bold green]")
+    console.print(f"[bold green][+] Analysis finished in {elapsed}s[/bold green]")
     console.print("[dim]Check the results/ directory for full reports.[/dim]\n")
 
 
