@@ -37,8 +37,22 @@ LOGS_DIR = PROJECT_ROOT / "logs"
 RULES_DIR = PROJECT_ROOT / "rules"
 RULES_FILE = RULES_DIR / "detection_rules.json"
 
-# ─── Volatility command name (customizable per machine) ──────────────────────
-VOL_COMMAND = "vol3"
+# ─── Volatility command name (auto-detected) ────────────────────────────────
+def _detect_vol_command() -> str:
+    """Auto-detect the Volatility 3 command available on this system.
+
+    Checks for common command names in PATH order:
+      vol3 → volatility3 → vol
+    Falls back to 'vol3' if none are found (will error at runtime).
+    """
+    import shutil
+    for candidate in ("vol3", "volatility3", "vol"):
+        if shutil.which(candidate):
+            return candidate
+    return "vol3"  # Default fallback
+
+
+VOL_COMMAND = _detect_vol_command()
 
 
 def _ensure_directories() -> None:
