@@ -557,32 +557,6 @@ DFIRTool/
 
 ---
 
-## 📸 Screenshots
-
-> Add your screenshots below after running the tool.
-
-### Pipeline Execution
-<!-- ![Pipeline Execution](screenshots/pipeline_execution.png) -->
-`📷 screenshots/pipeline_execution.png`
-
-### Process Tree Analysis
-<!-- ![Process Tree](screenshots/process_tree.png) -->
-`📷 screenshots/process_tree.png`
-
-### Behavioral Correlation Summary
-<!-- ![Correlation](screenshots/correlation_summary.png) -->
-`📷 screenshots/correlation_summary.png`
-
-### Threat Score Classification
-<!-- ![Threat Score](screenshots/threat_score.png) -->
-`📷 screenshots/threat_score.png`
-
-### Final Report
-<!-- ![Final Report](screenshots/final_report.png) -->
-`📷 screenshots/final_report.png`
-
----
-
 ## 🔮 Future Improvements
 
 | Feature | Description | Status |
