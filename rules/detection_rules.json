@@ -106,6 +106,15 @@
             "mitre_id": "T1204.002",
             "mitre_technique": "User Execution: Malicious File"
         },
+        "explorer_random_child": {
+            "description": "Explorer spawning executable with randomized name",
+            "parents": ["explorer.exe"],
+            "suspicious_children": ["_random_name_executable_"],
+            "score": 20,
+            "severity": "HIGH",
+            "mitre_id": "T1036.005",
+            "mitre_technique": "Masquerading: Match Legitimate Name or Location"
+        },
         "svchost_shell_spawn": {
             "description": "svchost.exe spawning command shell or scripting engine",
             "parents": ["svchost.exe"],
@@ -114,6 +123,24 @@
             "severity": "HIGH",
             "mitre_id": "T1055",
             "mitre_technique": "Process Injection"
+        },
+        "svchost_temp_child": {
+            "description": "svchost.exe spawning executable from temp location",
+            "parents": ["svchost.exe"],
+            "suspicious_children": ["_temp_executable_"],
+            "score": 20,
+            "severity": "HIGH",
+            "mitre_id": "T1055",
+            "mitre_technique": "Process Injection"
+        },
+        "powershell_child_spawn": {
+            "description": "PowerShell spawning non-system executable",
+            "parents": ["powershell.exe", "pwsh.exe"],
+            "suspicious_children": ["_any_non_system_"],
+            "score": 20,
+            "severity": "HIGH",
+            "mitre_id": "T1059.001",
+            "mitre_technique": "Command and Scripting Interpreter: PowerShell"
         },
         "browser_shell_spawn": {
             "description": "Browser spawning command shell",
@@ -133,6 +160,50 @@
             "mitre_technique": "Command and Scripting Interpreter"
         }
     },
+    "execution_chain_scoring": {
+        "max_chain_bonus": 25,
+        "chain_depth_bonus": {
+            "3": 5,
+            "4": 8,
+            "5": 10
+        },
+        "chain_patterns": {
+            "office_to_script_to_exec": {
+                "bonus": 15,
+                "description": "Office app -> scripting engine -> executable",
+                "pattern_parents": ["winword.exe", "excel.exe", "powerpnt.exe", "outlook.exe"],
+                "pattern_middle": ["wscript.exe", "cscript.exe", "mshta.exe", "powershell.exe", "cmd.exe"],
+                "pattern_leaf_type": "non_system"
+            },
+            "script_to_temp_to_rwx": {
+                "bonus": 20,
+                "description": "Scripting engine -> temp executable -> RWX memory",
+                "pattern_parents": ["wscript.exe", "cscript.exe", "mshta.exe"],
+                "pattern_middle_type": "temp_exec",
+                "pattern_leaf_type": "rwx_memory"
+            },
+            "browser_to_shell_to_exec": {
+                "bonus": 12,
+                "description": "Browser -> command shell -> executable",
+                "pattern_parents": ["chrome.exe", "firefox.exe", "msedge.exe", "iexplore.exe"],
+                "pattern_middle": ["cmd.exe", "powershell.exe"],
+                "pattern_leaf_type": "non_system"
+            },
+            "svchost_to_temp_exec": {
+                "bonus": 15,
+                "description": "svchost -> temp/random executable",
+                "pattern_parents": ["svchost.exe"],
+                "pattern_leaf_type": "temp_or_random"
+            }
+        },
+        "chain_risk_levels": {
+            "LOW":      { "min": 0,  "max": 10 },
+            "MEDIUM":   { "min": 11, "max": 18 },
+            "HIGH":     { "min": 19, "max": 24 },
+            "CRITICAL": { "min": 25, "max": 999 }
+        },
+        "memory_cross_correlation_bonus": 8
+    },
     "scoring_thresholds": {
         "normal":             { "min": 0,  "max": 30,  "label": "NORMAL",             "color": "green"  },
         "suspicious":         { "min": 31, "max": 60,  "label": "SUSPICIOUS",          "color": "yellow" },
@@ -142,7 +213,8 @@
         "Memory":  40,
         "Process": 35,
         "Network": 25,
-        "Relationship": 30
+        "Relationship": 30,
+        "Chain": 25
     },
     "confidence_multipliers": {
         "LOW":      0.3,
